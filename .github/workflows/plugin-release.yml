@@ -1,12 +1,19 @@
 name: Build, verify, and publish signed STATE plugin
 
 on:
+  push:
+    tags:
+      - 'v*-hustnlp'
   workflow_dispatch:
     inputs:
       release_tag:
         description: Release tag for this HUSTNLP compatibility build
         required: true
-        default: v0.3.4-hustnlp
+        default: v0.3.5-hustnlp
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+  PLUGIN_PACKAGE: artifacts/sub2api-state-kit_plugin_v0.3.5.s2plugin
 
 concurrency:
   group: state-kit-release-${{ github.ref }}
@@ -21,9 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate release tag
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: test "$RELEASE_TAG" = "v0.3.4-hustnlp"
+        run: test "$RELEASE_TAG" = "v0.3.5-hustnlp"
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
@@ -48,7 +53,7 @@ jobs:
           python3 scripts/package_plugin.py build --private-key "$KEY_PATH" --output artifacts
       - name: Verify package signature and checksums
         run: |
-          python3 scripts/package_plugin.py verify --package artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin
+          python3 scripts/package_plugin.py verify --package "$PLUGIN_PACKAGE"
           python3 - <<'PY'
           from pathlib import Path
           import hashlib
@@ -93,7 +98,7 @@ jobs:
           name: signed-plugin-release
           path: artifacts
       - name: Verify signed package
-        run: python3 scripts/package_plugin.py verify --package artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin
+        run: python3 scripts/package_plugin.py verify --package "$PLUGIN_PACKAGE"
       - name: Check packaged runtime matches this source
         env:
           ARCH: ${{ matrix.arch }}
@@ -103,7 +108,7 @@ jobs:
           python3 - <<'PY'
           import hashlib, os, zipfile
           from pathlib import Path
-          package = 'artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin'
+          package = 'artifacts/sub2api-state-kit_plugin_v0.3.5.s2plugin'
           with zipfile.ZipFile(package) as archive:
               delivered = archive.read('runtimes/linux-' + os.environ['ARCH'] + '/state-kit')
           rebuilt = Path('rebuilt-state-kit').read_bytes()
@@ -113,7 +118,7 @@ jobs:
         run: |
           git clone --depth 1 --branch v0.2.7 https://github.com/Wei-Shaw/sub2api.git stock-host
           test "$(git -C stock-host rev-parse HEAD)" = aea725f2ea644d5592d0bbb1d63b607efa7e200a
-          python3 plugin/integration/run_host_contract.py --host-src stock-host --package artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin --public-key plugin/release/publisher-public-key.txt --log host-contract.log
+          python3 plugin/integration/run_host_contract.py --host-src stock-host --package "$PLUGIN_PACKAGE" --public-key plugin/release/publisher-public-key.txt --log host-contract.log
       - name: Verify optional host directory adapter
         run: |
           python3 scripts/prepare_plugin_host.py --upstream stock-host --output directory-host
@@ -149,11 +154,10 @@ jobs:
       - name: Publish compatibility release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           gh release create "$RELEASE_TAG" artifacts/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "STATE Kit v0.3.4 HUSTNLP compatibility build" \
-            --notes "Adds the explicit one-way model alias gpt-5.6-sol -> gpt-6-sol while preserving strict validation for every other model." \
+            --title "STATE Kit v0.3.5 HUSTNLP dynamic proxy pool" \
+            --notes "Adds ordered renewal-led automatic and manual dynamic proxy selection, 191 GeoNode country choices, and automatic country failover when at least 20% of configured models remain unavailable after a full attempt round. The first renewing ticket leads later normal country changes; failure failover is de-duplicated against the same ticket generation. Existing valid tickets are preserved." \
             --prerelease

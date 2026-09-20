@@ -5,7 +5,7 @@ Sub2API v0.2.7 的开源 OpenAI OAuth transport 插件，提供逐账号 Pro / T
 请先阅读 [安装与使用说明](../docs/plugin.md)。配置在「插件管理 → STATE Kit → 配置」，基础功能不用修改宿主源码；账号名称、IP 管理下拉选择及手动查找 / 代理与模型测试需[v0.3.3 宿主适配](../docs/plugin-host-directory.md)。首次安装需在宿主信任本插件的发布者公钥。
 
 - 插件 ID：`io.github.wangyunjeff.sub2api-state-kit`
-- 插件版本：`0.3.4`
+- 插件版本：`0.3.5`
 - 协议：Sub2API 插件协议 / transport / UI Bridge / HostService v1
 - 宿主源码基线：官方 `v0.2.7`，提交 `aea725f2ea644d5592d0bbb1d63b607efa7e200a`
 - 当前部署范围：单应用实例
@@ -23,7 +23,9 @@ go build -trimpath -o build/state-kit ./cmd/state-kit
 
 发布者签名公钥在 `release/`；签名私钥必须在仓库外。参见 `../scripts/package_plugin.py` 和 `integration/` 中的宿主安装/运行集成测试。
 
-v0.3.4 adds the explicit one-way `gpt-5.6-sol` to `gpt-6-sol` model alias and preserves available tickets when advanced settings are saved.
+v0.3.5 adds an ordered dynamic proxy pool with renewal-led automatic or manual country selection, 191 GeoNode country choices, and early country failover when a completed round leaves at least 20% of configured models unavailable. The first ticket to renew becomes the leader; only its later generations advance the normal cycle, while failure-rate failover remains independently available. Country changes preserve valid tickets and retry only unavailable targets.
+
+v0.3.4 added the explicit one-way `gpt-5.6-sol` to `gpt-6-sol` model alias and preserved available tickets when advanced settings are saved.
 
 Automated releases use `.github/workflows/plugin-release.yml` and require the repository secret `STATE_KIT_RELEASE_PRIVATE_KEY_B64` containing the base64-encoded matching Ed25519 private key.
 

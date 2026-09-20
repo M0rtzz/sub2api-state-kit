@@ -26,39 +26,44 @@ type Engine struct {
 	testedProxy   *testedProxySession
 	actionIDs     []string
 	pluginv1.UnimplementedTransportPluginServer
-	mu               sync.Mutex
-	persistMu        sync.Mutex
-	config           Config
-	generation       uint64
-	ctx              context.Context
-	cancel           context.CancelFunc
-	generationCtx    context.Context
-	generationCancel context.CancelFunc
-	wake             chan struct{}
-	done             chan struct{}
-	wg               sync.WaitGroup
-	closed           bool
-	broker           *hcplugin.GRPCBroker
-	host             pluginv1.HostServiceClient
-	hostConn         *grpc.ClientConn
-	hostReady        bool
-	resources        *pluginv1.ListResourcesResponse
-	directory        map[int64]bool
-	directoryAt      time.Time
-	directoryError   string
-	tickets          map[string]*ticket
-	records          map[string]*jobRecord
-	jobs             map[string]uint64
-	revoked          map[string]string
-	semaphore        chan struct{}
-	clients          *clientPool
-	probeURL         string
-	exitIPURL        string
-	events           []activityEvent
-	eventSeq         uint64
-	tick             time.Duration
-	warmup           time.Duration
-	activeAfter      time.Time
+	mu                         sync.Mutex
+	persistMu                  sync.Mutex
+	config                     Config
+	generation                 uint64
+	ctx                        context.Context
+	cancel                     context.CancelFunc
+	generationCtx              context.Context
+	generationCancel           context.CancelFunc
+	wake                       chan struct{}
+	done                       chan struct{}
+	wg                         sync.WaitGroup
+	closed                     bool
+	broker                     *hcplugin.GRPCBroker
+	host                       pluginv1.HostServiceClient
+	hostConn                   *grpc.ClientConn
+	hostReady                  bool
+	resources                  *pluginv1.ListResourcesResponse
+	directory                  map[int64]bool
+	directoryAt                time.Time
+	directoryError             string
+	tickets                    map[string]*ticket
+	records                    map[string]*jobRecord
+	jobs                       map[string]uint64
+	revoked                    map[string]string
+	semaphore                  chan struct{}
+	clients                    *clientPool
+	probeURL                   string
+	exitIPURL                  string
+	events                     []activityEvent
+	eventSeq                   uint64
+	tick                       time.Duration
+	warmup                     time.Duration
+	activeAfter                time.Time
+	dynamicProxyAdvance        int64
+	dynamicProxyRenewalLeader  string
+	dynamicProxyRenewalVersion string
+	dynamicProxyAdvancedAt     time.Time
+	dynamicProxyAdvanceReason  string
 }
 type jobRecord struct {
 	RoundID       string
@@ -101,16 +106,23 @@ type statusTicket struct {
 	Attempts         int    `json:"attempts"`
 }
 type statusSnapshot struct {
-	ActionsReady   bool                       `json:"actions_ready"`
-	ManualTest     *manualResult              `json:"manual_test,omitempty"`
-	ResourcesReady bool                       `json:"resources_ready"`
-	Accounts       []*pluginv1.AccountSummary `json:"accounts"`
-	Proxies        []*pluginv1.ProxySummary   `json:"proxies"`
-	Events         []activityEvent            `json:"events"`
-	HostReady      bool                       `json:"host_ready"`
-	AccountIDs     []int64                    `json:"account_ids"`
-	Tickets        []statusTicket             `json:"tickets"`
-	Message        string                     `json:"message"`
+	ActionsReady              bool                       `json:"actions_ready"`
+	ManualTest                *manualResult              `json:"manual_test,omitempty"`
+	ResourcesReady            bool                       `json:"resources_ready"`
+	Accounts                  []*pluginv1.AccountSummary `json:"accounts"`
+	Proxies                   []*pluginv1.ProxySummary   `json:"proxies"`
+	Events                    []activityEvent            `json:"events"`
+	HostReady                 bool                       `json:"host_ready"`
+	AccountIDs                []int64                    `json:"account_ids"`
+	Tickets                   []statusTicket             `json:"tickets"`
+	Message                   string                     `json:"message"`
+	DynamicProxyMode          string                     `json:"dynamic_proxy_mode"`
+	DynamicProxyEntryCount    int                        `json:"dynamic_proxy_entry_count"`
+	DynamicProxyActiveID      string                     `json:"dynamic_proxy_active_id"`
+	DynamicProxyActiveName    string                     `json:"dynamic_proxy_active_name"`
+	DynamicProxyActiveCountry string                     `json:"dynamic_proxy_active_country"`
+	DynamicProxyAdvancedAt    string                     `json:"dynamic_proxy_advanced_at"`
+	DynamicProxyAdvanceReason string                     `json:"dynamic_proxy_advance_reason"`
 }
 
 func New() *Engine {
@@ -224,6 +236,16 @@ func (e *Engine) ApplyConfig(_ context.Context, r *pluginv1.ApplyConfigRequest) 
 	e.generationCancel()
 	e.generationCtx, e.generationCancel = context.WithCancel(e.ctx)
 	e.generation++
+	if dynamicProxyNetworkFingerprint(c) != dynamicProxyNetworkFingerprint(e.config) {
+		e.dynamicProxyAdvance = 0
+		e.dynamicProxyRenewalLeader = ""
+		e.dynamicProxyRenewalVersion = ""
+		e.dynamicProxyAdvancedAt = time.Time{}
+		e.dynamicProxyAdvanceReason = ""
+	} else if !dynamicProxyTargetConfigured(c, e.dynamicProxyRenewalLeader) {
+		e.dynamicProxyRenewalLeader = ""
+		e.dynamicProxyRenewalVersion = ""
+	}
 	if e.testedProxy != nil && e.testedProxy.ConfigFingerprint != networkFingerprint(c) {
 		e.testedProxy = nil
 	}
@@ -415,6 +437,17 @@ func (e *Engine) notify() {
 }
 func (e *Engine) snapshotLocked(now time.Time) statusSnapshot {
 	s := statusSnapshot{HostReady: e.hostReady, AccountIDs: []int64{}, Tickets: []statusTicket{}, Message: "STATE disabled; requests use the account business proxy"}
+	s.DynamicProxyMode = e.config.DynamicProxyMode
+	s.DynamicProxyEntryCount = len(e.config.DynamicProxyEntries)
+	if active, _, ok := activeDynamicProxyAt(e.config, now, e.dynamicProxyAdvance); ok {
+		s.DynamicProxyActiveID = active.ID
+		s.DynamicProxyActiveName = active.Name
+		s.DynamicProxyActiveCountry = strings.ToUpper(active.CountryCode)
+	}
+	if !e.dynamicProxyAdvancedAt.IsZero() {
+		s.DynamicProxyAdvancedAt = e.dynamicProxyAdvancedAt.UTC().Format(time.RFC3339)
+		s.DynamicProxyAdvanceReason = e.dynamicProxyAdvanceReason
+	}
 	s.ActionsReady = e.resources != nil && e.resources.ActionsSupported
 	if e.manual != nil {
 		copy := *e.manual

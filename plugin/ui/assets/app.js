@@ -5,7 +5,7 @@
   else api.start(global);
 })(typeof window === 'object' ? window : null, function () {
   'use strict';
-  const DEFAULT_CONFIG = Object.freeze({ enabled: false, auto_harvest: true, business_use_front: false, allow_without_ticket: true, dynamic_proxy_url: '', harvest_dial_proxy_url: '', harvest_dial_proxy_mode: 'direct', harvest_dial_proxy_id: 0, observe_exit_ip: false, ttl_minutes: 60,
+  const DEFAULT_CONFIG = Object.freeze({ enabled: false, auto_harvest: true, business_use_front: false, allow_without_ticket: true, dynamic_proxy_url: '', dynamic_proxy_mode: 'auto', dynamic_proxy_entries: Object.freeze([]), dynamic_proxy_selected_id: '', harvest_dial_proxy_url: '', harvest_dial_proxy_mode: 'direct', harvest_dial_proxy_id: 0, observe_exit_ip: false, ttl_minutes: 60,
     refresh_before_minutes: 10, max_attempts: 8, attempt_interval_seconds: 10, cooldown_seconds: 300 });
   const NUMBERS = Object.freeze({ ttl_minutes: [1, 60, '票据有效期'], refresh_before_minutes: [0, 59, '提前续期'],
     max_attempts: [1, 32, '每轮最多尝试'], attempt_interval_seconds: [1, 300, '尝试间隔'], cooldown_seconds: [30, 3600, '失败后冷却'] });
@@ -14,6 +14,11 @@
     checking_proxy: ['正在检查代理', 'warning'], ready: ['可用', 'success'], renewing: ['正在续期', ''], cooldown: ['冷却中', 'warning'],
     expired: ['已过期', 'warning'], error: ['获取失败', 'error'] });
   const MODEL_PATTERN = /^gpt-[A-Za-z0-9][A-Za-z0-9._-]{0,94}$/;
+  const PROXY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+  // GeoNode residential country set. Names are resolved locally with
+  // Intl.DisplayNames so no request containing proxy credentials is needed.
+  const GEONODE_COUNTRY_CODES = Object.freeze(('AF,AL,DZ,AD,AO,AG,AR,AM,AU,AT,AZ,BS,BH,BD,BB,BY,BE,BZ,BJ,BT,BO,BA,BW,BR,BN,BG,BF,BI,CV,KH,CM,CA,CF,TD,CL,CN,CO,KM,CG,CD,CR,CI,HR,CY,CZ,DK,DJ,DM,DO,EC,EG,SV,GQ,EE,SZ,ET,FJ,FI,FR,GA,GM,GE,DE,GH,GR,GD,GT,GN,GW,GY,HT,HN,HU,IS,IN,ID,IR,IQ,IE,IL,IT,JM,JP,JO,KZ,KE,KI,KR,KW,KG,LA,LV,LB,LS,LR,LY,LI,LT,LU,MG,MW,MY,MV,ML,MT,MH,MR,MU,MX,FM,MD,MC,MN,ME,MA,MZ,MM,NA,NR,NP,NL,NZ,NI,NE,NG,MK,NO,OM,PK,PW,PS,PA,PG,PY,PE,PH,PL,PT,QA,RO,RU,RW,KN,LC,VC,WS,SM,ST,SA,SN,RS,SC,SL,SG,SK,SI,SB,SO,ZA,SS,ES,LK,SD,SR,SE,CH,SY,TJ,TZ,TH,TL,TG,TO,TT,TN,TR,TM,TV,UG,UA,AE,GB,US,UY,UZ,VU,VE,VN,YE,ZM,ZW').split(','));
+  const COUNTRY_MARKER = /-country-([a-z]{2})(?=-|:|@|\/|$)/i;
   const ERRORS = Object.freeze({ checking_business_proxy:'正在检查账号业务出口…',checking_dynamic_proxy:'正在检查前置及动态代理…',business_connectivity_failed:'账号业务出口检测未通过，本次查找已停止。请检查账号代理；检测服务不可达也可能造成失败。',dynamic_connectivity_failed:'本次动态出口检测未通过；还有尝试次数时会自动换出口，次数用完后停止。', managed_proxy_unavailable:'选中的前置代理不可用，请检查 IP 管理或宿主适配',  proxy_auth_failed:'代理用户名或密码验证失败', front_proxy_failed:'前置代理连接或 CONNECT 被拒绝', transport_timeout:'代理连接或请求超时', transport_tls_failed:'TLS 连接或证书验证失败', attempts_exhausted: '本轮尝试已用完', identity_unavailable: '暂时无法取得账号授权或业务代理',
     invalid_dynamic_proxy: '动态代理配置无效', harvest_failed: '动态代理获取票据未成功', unexpected_state_length: '票据长度与所选套餐不符',
     identity_changed: '账号授权信息发生变化', fixed_proxy_validation_failed: '票据未通过原业务代理验证',
@@ -37,11 +42,32 @@
       if (source[key] !== undefined) config[key] = source[key];
     });
     if (!source.harvest_dial_proxy_mode) config.harvest_dial_proxy_mode = config.harvest_dial_proxy_url ? 'manual' : 'direct';
+    if (!['auto', 'manual'].includes(config.dynamic_proxy_mode)) config.dynamic_proxy_mode = 'auto';
+    config.dynamic_proxy_entries = Array.isArray(source.dynamic_proxy_entries) ? source.dynamic_proxy_entries.map(function (entry) {
+      return { id: typeof entry.id === 'string' ? entry.id : '', name: typeof entry.name === 'string' ? entry.name : '',
+        country_code: typeof entry.country_code === 'string' ? entry.country_code.toLowerCase() : '', url: typeof entry.url === 'string' ? entry.url : '' };
+    }) : [];
+    if (!config.dynamic_proxy_entries.length && config.dynamic_proxy_url) {
+      const country = proxyCountryCode(config.dynamic_proxy_url);
+      config.dynamic_proxy_entries.push({ id: 'legacy', name: country ? country.toUpperCase() : 'Proxy 1', country_code: country, url: config.dynamic_proxy_url });
+    }
+    if (config.dynamic_proxy_mode === 'manual' && !config.dynamic_proxy_selected_id && !config.dynamic_proxy_url && config.dynamic_proxy_entries.length) config.dynamic_proxy_selected_id = config.dynamic_proxy_entries[0].id;
     config.accounts = Array.isArray(source.accounts) ? source.accounts.map(function (account) {
       return { account_id: account.account_id, enabled: account.enabled === true,
         plan: account.plan || 'pro', models: Array.isArray(account.models) ? account.models.slice() : ['gpt-6-astra'] };
     }) : [];
     return config;
+  }
+  function validateProxyValue(proxyValue) {
+    if (typeof proxyValue !== 'string') throw new Error('动态代理地址格式不正确。');
+    if (!proxyValue) return;
+    try {
+      if (proxyValue.length > 4096 || /[\r\n\t]/.test(proxyValue)) throw new Error();
+      const expanded = proxyValue.replace(/\{(?:random|sid)\}/g, '123456');
+      if (/[{}]/.test(expanded)) throw new Error();
+      const url = new URL(expanded);
+      if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol) || !url.hostname || url.search || url.hash || (url.pathname && url.pathname !== '/')) throw new Error();
+    } catch (_) { throw new Error('代理须为完整的 HTTP(S) 或 SOCKS5(H) 地址。'); }
   }
   function validateConfig(config) {
     const mode = config.harvest_dial_proxy_mode || (config.harvest_dial_proxy_url ? 'manual' : 'direct');
@@ -55,18 +81,20 @@
     if (typeof config.observe_exit_ip !== 'boolean') throw new Error('出口 IP 检测开关格式不正确。');
     if (typeof config.harvest_dial_proxy_url !== 'string') throw new Error('前置代理地址格式不正确。');
     if (/[{}]/.test(config.harvest_dial_proxy_url)) throw new Error('前置代理不能使用会话占位符。');
-    for (const proxyValue of [config.dynamic_proxy_url, config.harvest_dial_proxy_url]) {
-    if (typeof proxyValue !== 'string') throw new Error('动态代理地址格式不正确。');
-    if (proxyValue) {
-      try {
-        if (proxyValue.length > 4096 || /[\r\n\t]/.test(proxyValue)) throw new Error();
-        const expanded = proxyValue.replace(/\{(?:random|sid)\}/g, '123456');
-        if (/[{}]/.test(expanded)) throw new Error();
-        const url = new URL(expanded);
-        if (!['http:', 'https:', 'socks5:', 'socks5h:'].includes(url.protocol) || !url.hostname || url.search || url.hash || (url.pathname && url.pathname !== '/')) throw new Error();
-      } catch (_) { throw new Error('代理须为完整的 HTTP(S) 或 SOCKS5(H) 地址。'); }
-    }
-    }
+    for (const proxyValue of [config.dynamic_proxy_url, config.harvest_dial_proxy_url]) validateProxyValue(proxyValue);
+    if (!['auto', 'manual'].includes(config.dynamic_proxy_mode)) throw new Error('请选择自动轮换或手动固定国家。');
+    if (!Array.isArray(config.dynamic_proxy_entries) || config.dynamic_proxy_entries.length > 64) throw new Error('动态代理列表最多可保存 64 项。');
+    const entryIDs = new Set(), entryURLs = new Set();
+    config.dynamic_proxy_entries.forEach(function (entry) {
+      if (!entry || !PROXY_ID_PATTERN.test(entry.id) || entryIDs.has(entry.id)) throw new Error('动态代理条目标识无效或重复。');
+      entryIDs.add(entry.id);
+      if (typeof entry.name !== 'string' || entry.name.length > 128 || /[\r\n\t]/.test(entry.name)) throw new Error('动态代理名称无效。');
+      if (entry.country_code && !/^[a-z]{2}$/.test(entry.country_code)) throw new Error('国家代码须为两个小写字母。');
+      validateProxyValue(entry.url);
+      if (!entry.url || entryURLs.has(entry.url)) throw new Error('动态代理列表中存在空地址或重复地址。');
+      entryURLs.add(entry.url);
+    });
+    if (config.dynamic_proxy_selected_id && !entryIDs.has(config.dynamic_proxy_selected_id)) throw new Error('手动选择的代理不在列表中。');
     Object.keys(NUMBERS).forEach(function (key) {
       const bounds = NUMBERS[key];
       if (!Number.isInteger(config[key]) || config[key] < bounds[0] || config[key] > bounds[1]) {
@@ -93,7 +121,7 @@
       });
     });
     if (totalModels > 1024) throw new Error('最多配置 1024 个账号与模型组合。');
-    if (config.enabled && config.accounts.some(function (account) { return account.enabled; }) && !config.dynamic_proxy_url) {
+    if (config.enabled && config.accounts.some(function (account) { return account.enabled; }) && !config.dynamic_proxy_url && !config.dynamic_proxy_entries.length) {
       throw new Error('启用账号前，请填写动态代理地址。');
     }
     return config;
@@ -122,6 +150,13 @@
       account_ids: Array.isArray(status.account_ids) ? Array.from(new Set(status.account_ids.map(accountID).filter(function (id) { return id !== null; }))).sort(function (a, b) { return a - b; }) : [],
       tickets: Array.isArray(status.tickets) ? status.tickets.filter(function (ticket) { return ticket && accountID(ticket.account_id) !== null; }).slice(0, 4096) : [],
       events: Array.isArray(status.events) ? status.events.slice(-200) : [],
+      dynamic_proxy_mode: status.dynamic_proxy_mode === 'manual' ? 'manual' : 'auto',
+      dynamic_proxy_entry_count: Number.isInteger(status.dynamic_proxy_entry_count) ? status.dynamic_proxy_entry_count : 0,
+      dynamic_proxy_active_id: typeof status.dynamic_proxy_active_id === 'string' ? status.dynamic_proxy_active_id : '',
+      dynamic_proxy_active_name: typeof status.dynamic_proxy_active_name === 'string' ? status.dynamic_proxy_active_name.slice(0, 128) : '',
+      dynamic_proxy_active_country: typeof status.dynamic_proxy_active_country === 'string' && /^[A-Z]{2}$/.test(status.dynamic_proxy_active_country) ? status.dynamic_proxy_active_country : '',
+      dynamic_proxy_advanced_at: typeof status.dynamic_proxy_advanced_at === 'string' ? status.dynamic_proxy_advanced_at : '',
+      dynamic_proxy_advance_reason: ['failure_rate_20_percent','ticket_refresh_due'].includes(status.dynamic_proxy_advance_reason) ? status.dynamic_proxy_advance_reason : '',
       message: redactError(MESSAGES[status.message] || status.message || result && result.message || '') };
   }
   function attemptRows(events) {
@@ -142,6 +177,30 @@
   function countryLabel(code) {
     if(typeof code!=='string'||!/^[A-Z]{2}$/.test(code)||['XX','ZZ'].includes(code))return '国家未知';
     try {return new Intl.DisplayNames(['zh-CN'],{type:'region'}).of(code)+' ('+code+')';} catch(_){return code;}
+  }
+  function proxyCountryCode(raw) {
+    const match = typeof raw === 'string' ? raw.match(COUNTRY_MARKER) : null;
+    return match ? match[1].toLowerCase() : '';
+  }
+  function replaceProxyCountry(raw, code) {
+    if (typeof raw !== 'string' || !COUNTRY_MARKER.test(raw) || typeof code !== 'string' || !/^[A-Za-z]{2}$/.test(code)) throw new Error('当前地址未包含可替换的 country-xx 国家标记。');
+    return raw.replace(COUNTRY_MARKER, '-country-' + code.toLowerCase());
+  }
+  function countryFlag(code) {
+    if (typeof code !== 'string' || !/^[A-Za-z]{2}$/.test(code)) return '🌐';
+    return String.fromCodePoint.apply(String, code.toUpperCase().split('').map(function (char) { return 127397 + char.charCodeAt(0); }));
+  }
+  function countryChoiceLabel(code) { return countryFlag(code) + ' ' + countryLabel(code.toUpperCase()); }
+  function proxyEntryID(raw) {
+    let hash = 2166136261;
+    for (let i = 0; i < raw.length; i++) hash = Math.imul(hash ^ raw.charCodeAt(i), 16777619);
+    return 'proxy-' + (hash >>> 0).toString(16).padStart(8, '0');
+  }
+  function safeProxyEndpoint(raw) {
+    try {
+      const parsed = new URL(String(raw).replace(/\{(?:random|sid)\}/g, '123456'));
+      return parsed.protocol + '//' + parsed.hostname + (parsed.port ? ':' + parsed.port : '');
+    } catch (_) { return '地址待检查'; }
   }
   function triggerLabel(trigger) {return {manual:'单账号手动',manual_all:'全部手动',automatic:'自动守护'}[trigger]||'';}
   function remainingText(seconds) {
@@ -189,11 +248,75 @@
     let lastManualKind = '';
     let manualRequestModel = '';
     let stopPending = false;
+    let dynamicProxyEntries = [];
+    let dynamicProxySelectedID = '';
     const accountFeedback = new Map();
     function accountLabel(id) { return accountNames.has(id) ? accountNames.get(id) + ' · ID ' + id : 'ID ' + id; }
     function updateFrontMode() {
       byID('front-manual').hidden = byID('harvest-dial-proxy-mode').value !== 'manual';
       byID('front-managed').hidden = byID('harvest-dial-proxy-mode').value !== 'managed';
+    }
+    function updateDynamicProxyMode() {
+      const manual = byID('dynamic-proxy-mode').value === 'manual';
+      byID('dynamic-proxy-manual-field').hidden = !manual;
+    }
+    function renderCountryChoices() {
+      const select = byID('dynamic-proxy-country');
+      const selected = select.value;
+      select.replaceChildren();
+      const empty = element('option', '选择国家，仅替换 country-xx'); empty.value = ''; select.appendChild(empty);
+      GEONODE_COUNTRY_CODES.forEach(function (code) { const option = element('option', countryChoiceLabel(code)); option.value = code.toLowerCase(); select.appendChild(option); });
+      select.value = GEONODE_COUNTRY_CODES.includes(selected.toUpperCase()) ? selected.toLowerCase() : '';
+    }
+    function uniqueProxyEntryID(url) {
+      const base = proxyEntryID(url);
+      let id = base, suffix = 2;
+      while (dynamicProxyEntries.some(function (entry) { return entry.id === id && entry.url !== url; })) id = base + '-' + suffix++;
+      return id;
+    }
+    function renderDynamicProxyPool() {
+      const selected = byID('dynamic-proxy-selected-id');
+      selected.replaceChildren();
+      const temporary = element('option', '使用上方临时地址'); temporary.value = ''; selected.appendChild(temporary);
+      dynamicProxyEntries.forEach(function (entry) {
+        const option = element('option', countryFlag(entry.country_code) + ' ' + (entry.name || countryLabel(entry.country_code.toUpperCase())));
+        option.value = entry.id; selected.appendChild(option);
+      });
+      if (dynamicProxySelectedID && !dynamicProxyEntries.some(function (entry) { return entry.id === dynamicProxySelectedID; })) dynamicProxySelectedID = '';
+      selected.value = dynamicProxySelectedID;
+
+      const list = byID('dynamic-proxy-list'); list.replaceChildren();
+      dynamicProxyEntries.forEach(function (entry, index) {
+        const row = element('div', undefined, 'proxy-pool-row');
+        const label = element('div', undefined, 'proxy-pool-label');
+        label.appendChild(element('span', String(index + 1).padStart(2, '0'), 'proxy-pool-index'));
+        label.appendChild(element('span', countryFlag(entry.country_code) + ' ' + (entry.name || countryLabel(entry.country_code.toUpperCase()))));
+        label.appendChild(element('span', safeProxyEndpoint(entry.url), 'proxy-pool-endpoint'));
+        const buttons = element('div', undefined, 'proxy-pool-buttons');
+        const up = element('button', '上移', 'secondary'); up.type = 'button'; up.disabled = index === 0;
+        up.addEventListener('click', function () { if (index < 1) return; [dynamicProxyEntries[index - 1], dynamicProxyEntries[index]] = [dynamicProxyEntries[index], dynamicProxyEntries[index - 1]]; renderDynamicProxyPool(); markDirty(); });
+        const down = element('button', '下移', 'secondary'); down.type = 'button'; down.disabled = index === dynamicProxyEntries.length - 1;
+        down.addEventListener('click', function () { if (index >= dynamicProxyEntries.length - 1) return; [dynamicProxyEntries[index + 1], dynamicProxyEntries[index]] = [dynamicProxyEntries[index], dynamicProxyEntries[index + 1]]; renderDynamicProxyPool(); markDirty(); });
+        const use = element('button', '选中', 'secondary'); use.type = 'button'; use.disabled = dynamicProxySelectedID === entry.id;
+        use.addEventListener('click', function () { dynamicProxySelectedID = entry.id; byID('dynamic-proxy-mode').value = 'manual'; updateDynamicProxyMode(); renderDynamicProxyPool(); markDirty(); });
+        const remove = element('button', '删除', 'delete-button'); remove.type = 'button';
+        remove.addEventListener('click', function () { dynamicProxyEntries.splice(index, 1); if (dynamicProxySelectedID === entry.id) dynamicProxySelectedID = ''; renderDynamicProxyPool(); markDirty(); });
+        buttons.appendChild(up); buttons.appendChild(down); buttons.appendChild(use); buttons.appendChild(remove);
+        row.appendChild(label); row.appendChild(buttons); list.appendChild(row);
+      });
+      byID('dynamic-proxy-empty').hidden = dynamicProxyEntries.length !== 0;
+    }
+    function addDynamicProxyFromInput() {
+      const url = byID('dynamic-proxy-url').value.trim();
+      try { validateProxyValue(url); } catch (error) { notice(error.message, 'error'); return; }
+      if (!url) { notice('请先填写要加入列表的动态代理地址。', 'error'); return; }
+      if (dynamicProxyEntries.some(function (entry) { return entry.url === url; })) { notice('此地址已在轮换列表中。', 'error'); return; }
+      if (dynamicProxyEntries.length >= 64) { notice('动态代理列表最多可保存 64 项。', 'error'); return; }
+      const country = proxyCountryCode(url);
+      const id = uniqueProxyEntryID(url);
+      dynamicProxyEntries.push({ id: id, name: country ? countryLabel(country.toUpperCase()) : 'Proxy ' + (dynamicProxyEntries.length + 1), country_code: country, url: url });
+      if (!dynamicProxySelectedID) dynamicProxySelectedID = id;
+      renderDynamicProxyPool(); markDirty(); notice('已加入轮换列表；点击保存设置或先测试代理使其生效。', 'success');
     }
     function renderResources(status) {
       accountNames = new Map(status.accounts.map(a => [a.id, a.name || '未命名账号']));
@@ -288,6 +411,12 @@
       byID('auto-harvest').checked=config.auto_harvest;
       byID('business-use-front').checked=config.business_use_front;
       byID('dynamic-proxy-url').value = config.dynamic_proxy_url;
+      byID('dynamic-proxy-mode').value = config.dynamic_proxy_mode;
+      dynamicProxyEntries = config.dynamic_proxy_entries.map(function (entry) { return Object.assign({}, entry); });
+      dynamicProxySelectedID = config.dynamic_proxy_selected_id;
+      const inputCountry = proxyCountryCode(config.dynamic_proxy_url);
+      byID('dynamic-proxy-country').value = GEONODE_COUNTRY_CODES.includes(inputCountry.toUpperCase()) ? inputCountry : '';
+      updateDynamicProxyMode(); renderDynamicProxyPool();
       byID('harvest-dial-proxy-url').value = config.harvest_dial_proxy_url;
       byID('harvest-dial-proxy-mode').value = config.harvest_dial_proxy_mode;
       const selectedProxy = byID('harvest-dial-proxy-id');
@@ -304,7 +433,7 @@
       updateSaveState();
     }
     function formConfig() {
-      const config = { enabled: byID('enabled').checked, auto_harvest:byID('auto-harvest').checked, business_use_front:byID('business-use-front').checked, allow_without_ticket: byID('allow-without-ticket').checked, dynamic_proxy_url: byID('dynamic-proxy-url').value.trim(), harvest_dial_proxy_mode: byID('harvest-dial-proxy-mode').value, harvest_dial_proxy_id: byID('harvest-dial-proxy-mode').value === 'managed' ? Number(byID('harvest-dial-proxy-id').value) : 0, harvest_dial_proxy_url: byID('harvest-dial-proxy-mode').value === 'manual' ? byID('harvest-dial-proxy-url').value.trim() : '', observe_exit_ip: byID('observe-exit-ip').checked };
+      const config = { enabled: byID('enabled').checked, auto_harvest:byID('auto-harvest').checked, business_use_front:byID('business-use-front').checked, allow_without_ticket: byID('allow-without-ticket').checked, dynamic_proxy_url: byID('dynamic-proxy-url').value.trim(), dynamic_proxy_mode: byID('dynamic-proxy-mode').value, dynamic_proxy_entries: dynamicProxyEntries.map(function (entry) { return Object.assign({}, entry); }), dynamic_proxy_selected_id: byID('dynamic-proxy-selected-id').value, harvest_dial_proxy_mode: byID('harvest-dial-proxy-mode').value, harvest_dial_proxy_id: byID('harvest-dial-proxy-mode').value === 'managed' ? Number(byID('harvest-dial-proxy-id').value) : 0, harvest_dial_proxy_url: byID('harvest-dial-proxy-mode').value === 'manual' ? byID('harvest-dial-proxy-url').value.trim() : '', observe_exit_ip: byID('observe-exit-ip').checked };
       Object.keys(numberIDs).forEach(function (key) {
         const raw = byID(numberIDs[key]).value.trim();
         config[key] = raw === '' ? NaN : Number(raw);
@@ -349,6 +478,14 @@
       const connection = byID('connection-status');
       connection.textContent = status.host_ready ? '宿主已连接' : '等待宿主初始化';
       connection.className = 'badge ' + (status.host_ready ? 'success' : 'warning');
+      const activeParts = [];
+      if (status.dynamic_proxy_active_country) activeParts.push(countryFlag(status.dynamic_proxy_active_country) + ' ' + countryLabel(status.dynamic_proxy_active_country));
+      else if (status.dynamic_proxy_active_name) activeParts.push(status.dynamic_proxy_active_name);
+      if (status.dynamic_proxy_entry_count) activeParts.push('共 ' + status.dynamic_proxy_entry_count + ' 项');
+      if (status.dynamic_proxy_mode === 'manual') activeParts.push('手动固定');
+      if (status.dynamic_proxy_advance_reason === 'failure_rate_20_percent') activeParts.push('最近因不可用比例达到 20% 提前切换');
+      if (status.dynamic_proxy_advance_reason === 'ticket_refresh_due') activeParts.push('最近由续期领跑票据切换');
+      byID('dynamic-proxy-active').textContent = activeParts.length ? activeParts.join(' · ') : '尚未保存动态代理列表。';
       byID('status-summary').textContent = status.message || (status.host_ready ? '状态已更新' : '等待宿主提供账号信息；可先保存配置。');
       const options = byID('detected-accounts'); options.replaceChildren();
       status.account_ids.forEach(function (id) { const option = element('option', accountLabel(id)); option.setAttribute('label', accountLabel(id)); option.value = id; options.appendChild(option); });
@@ -466,7 +603,9 @@
     }
     function proxyForm() {
       const mode=byID('harvest-dial-proxy-mode').value;
-      return {dynamic_proxy_url:byID('dynamic-proxy-url').value.trim(),harvest_dial_proxy_mode:mode,
+      return {dynamic_proxy_url:byID('dynamic-proxy-url').value.trim(),dynamic_proxy_mode:byID('dynamic-proxy-mode').value,
+        dynamic_proxy_entries:dynamicProxyEntries.map(function(entry){return Object.assign({},entry);}),
+        dynamic_proxy_selected_id:byID('dynamic-proxy-selected-id').value,harvest_dial_proxy_mode:mode,
         harvest_dial_proxy_url:mode==='manual'?byID('harvest-dial-proxy-url').value.trim():'',
         harvest_dial_proxy_id:mode==='managed'?Number(byID('harvest-dial-proxy-id').value):0};
     }
@@ -498,13 +637,14 @@
       pending.phase='saving';showProxyResult(result);
       try {
         if(JSON.stringify(proxyForm())!==JSON.stringify(pending.proxy))throw new Error('代理填写内容已改变，未自动保存；请重新测试。');
-        // Reload persisted config and change only the four proxy fields. Other
+        // Reload persisted config and change only the proxy fields. Other
         // unsaved form fields and account switches never enter this save.
         const saved=normalizeConfig((await bridge.load()).config);
         Object.assign(saved,pending.proxy);
         const response=await bridge.save(saved);
         const confirmed=normalizeConfig(response.config);
-        if(Object.keys(pending.proxy).some(key=>confirmed[key]!==pending.proxy[key]))throw new Error('保存结果与本次测试配置不一致，请重新打开页面核对。');
+        const expected=normalizeConfig(Object.assign({},DEFAULT_CONFIG,pending.proxy));
+        if(Object.keys(pending.proxy).some(key=>JSON.stringify(confirmed[key])!==JSON.stringify(expected[key])))throw new Error('保存结果与本次测试配置不一致，请重新打开页面核对。');
         pending.phase='saved';
         try {dirty=JSON.stringify(normalizeConfig(formConfig()))!==JSON.stringify(confirmed);} catch(_){dirty=true;}
         updateSaveState(dirty?'代理已自动生效；其他修改尚未保存':'代理已自动保存并生效');
@@ -638,7 +778,16 @@
       } finally { statusBusy = false;checkProgressTimeouts(); if (!closed) byID('refresh-status').disabled = false; }
     }
     byID('harvest-dial-proxy-mode').addEventListener('change', updateFrontMode);
-    ['dynamic-proxy-url','harvest-dial-proxy-mode','harvest-dial-proxy-id','harvest-dial-proxy-url'].forEach(id=>{byID(id).addEventListener('input',()=>{if(proxyTest&&proxyTest.phase==='saved'&&JSON.stringify(proxyForm())!==JSON.stringify(proxyTest.proxy)){byID('proxy-test-status').textContent='代理填写内容已更改，请重新测试使新配置生效。';byID('proxy-test-status').className='proxy-result pending';}});});
+    byID('dynamic-proxy-mode').addEventListener('change', function () { updateDynamicProxyMode(); markDirty(); });
+    byID('dynamic-proxy-selected-id').addEventListener('change', function () { dynamicProxySelectedID = byID('dynamic-proxy-selected-id').value; renderDynamicProxyPool(); markDirty(); });
+    byID('dynamic-proxy-country').addEventListener('change', function () {
+      const code = byID('dynamic-proxy-country').value;
+      if (!code) return;
+      try { byID('dynamic-proxy-url').value = replaceProxyCountry(byID('dynamic-proxy-url').value.trim(), code); markDirty(); notice('已切换为 ' + countryChoiceLabel(code) + '；认证信息和网关保持不变。', 'success'); }
+      catch (error) { notice(error.message, 'error'); }
+    });
+    byID('add-dynamic-proxy').addEventListener('click', addDynamicProxyFromInput);
+    ['dynamic-proxy-url','dynamic-proxy-mode','dynamic-proxy-selected-id','harvest-dial-proxy-mode','harvest-dial-proxy-id','harvest-dial-proxy-url'].forEach(id=>{byID(id).addEventListener('input',()=>{if(proxyTest&&proxyTest.phase==='saved'&&JSON.stringify(proxyForm())!==JSON.stringify(proxyTest.proxy)){byID('proxy-test-status').textContent='代理填写内容已更改，请重新测试使新配置生效。';byID('proxy-test-status').className='proxy-result pending';}});});
     byID('config-form').addEventListener('input', markDirty);
     byID('config-form').addEventListener('change', markDirty);
     async function saveConfig(event) {
@@ -699,6 +848,7 @@
       global.removeEventListener('pagehide', stop);
     }
     global.addEventListener('pagehide', stop);
+    renderCountryChoices();
     (async function () {
       try {
         if (!bridge) throw new Error('配置桥接未加载，请重新打开插件配置页。');
@@ -713,6 +863,6 @@
     })();
     return { stop: stop, refreshStatus: refreshStatus };
   }
-  return { attemptRows:attemptRows, countryLabel:countryLabel, extractHTML:extractHTML, previewDocument:previewDocument, DEFAULT_CONFIG: DEFAULT_CONFIG, normalizeConfig: normalizeConfig, validateConfig: validateConfig,
+  return { attemptRows:attemptRows, countryLabel:countryLabel, countryFlag:countryFlag, proxyCountryCode:proxyCountryCode, replaceProxyCountry:replaceProxyCountry, safeProxyEndpoint:safeProxyEndpoint, GEONODE_COUNTRY_CODES:GEONODE_COUNTRY_CODES, extractHTML:extractHTML, previewDocument:previewDocument, DEFAULT_CONFIG: DEFAULT_CONFIG, normalizeConfig: normalizeConfig, validateConfig: validateConfig,
     accountID: accountID, parseStatus: parseStatus, stateLabel: stateLabel, errorLabel: errorLabel, redactError: redactError, remainingText: remainingText, start: start };
 });

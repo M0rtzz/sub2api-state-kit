@@ -10,6 +10,7 @@ import (
 type testedProxySession struct {
 	ConfigFingerprint string
 	FrontFingerprint  string
+	ActiveProxyID     string
 	Route             string
 	ExpiresAt         time.Time
 }
@@ -17,7 +18,7 @@ type testedProxySession struct {
 const testedProxyLifetime = time.Minute
 
 func networkFingerprint(c Config) string {
-	return digest("tested-proxy-v1", c.DynamicProxyURL, frontProxyMode(c),
+	return digest("tested-proxy-v2", dynamicProxyNetworkFingerprint(c), frontProxyMode(c),
 		fmt.Sprint(c.HarvestDialProxyID), c.HarvestDialProxyURL)
 }
 
@@ -28,8 +29,12 @@ func (e *Engine) rememberTestedProxy(id string, c Config, route, outer string, s
 	if e.closed || !time.Now().Before(expires) || e.manual == nil || e.manual.ID != id || !e.manual.Running {
 		return ""
 	}
+	active, _, ok := activeDynamicProxyAt(c, started, e.dynamicProxyAdvance)
+	if !ok {
+		return ""
+	}
 	e.testedProxy = &testedProxySession{ConfigFingerprint: networkFingerprint(c),
-		FrontFingerprint: proxyFingerprint(outer), Route: route, ExpiresAt: expires}
+		FrontFingerprint: proxyFingerprint(outer), ActiveProxyID: active.ID, Route: route, ExpiresAt: expires}
 	return expires.UTC().Format(time.RFC3339)
 }
 
@@ -45,6 +50,10 @@ func (e *Engine) testedProxyRoute(c Config, outer string) string {
 		return ""
 	}
 	if p.ConfigFingerprint != networkFingerprint(c) || p.FrontFingerprint != proxyFingerprint(outer) {
+		return ""
+	}
+	active, _, ok := activeDynamicProxyAt(c, time.Now(), e.dynamicProxyAdvance)
+	if !ok || active.ID != p.ActiveProxyID {
 		return ""
 	}
 	return p.Route

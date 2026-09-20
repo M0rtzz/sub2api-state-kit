@@ -18,10 +18,13 @@ import (
 const maxManualText = 256 * 1024
 
 type proxyTestConfig struct {
-	DynamicProxyURL string `json:"dynamic_proxy_url"`
-	Mode            string `json:"harvest_dial_proxy_mode"`
-	ProxyID         int64  `json:"harvest_dial_proxy_id"`
-	URL             string `json:"harvest_dial_proxy_url"`
+	DynamicProxyURL        string              `json:"dynamic_proxy_url"`
+	DynamicProxyMode       string              `json:"dynamic_proxy_mode"`
+	DynamicProxyEntries    []DynamicProxyEntry `json:"dynamic_proxy_entries"`
+	DynamicProxySelectedID string              `json:"dynamic_proxy_selected_id"`
+	Mode                   string              `json:"harvest_dial_proxy_mode"`
+	ProxyID                int64               `json:"harvest_dial_proxy_id"`
+	URL                    string              `json:"harvest_dial_proxy_url"`
 }
 
 type manualAction struct {
@@ -63,7 +66,7 @@ func (e *Engine) RunAction(_ context.Context, req *pluginv1.RunActionRequest) (*
 	reject := func(message string) (*pluginv1.RunActionResponse, error) {
 		return &pluginv1.RunActionResponse{Message: message}, nil
 	}
-	if req == nil || len(req.ActionJson) > 32768 {
+	if req == nil || len(req.ActionJson) > 512*1024 {
 		return reject("动作参数过大或为空")
 	}
 	var a manualAction
@@ -153,12 +156,16 @@ func (e *Engine) RunAction(_ context.Context, req *pluginv1.RunActionRequest) (*
 			}
 			c := DefaultConfig()
 			c.DynamicProxyURL = a.Proxy.DynamicProxyURL
+			c.DynamicProxyMode = a.Proxy.DynamicProxyMode
+			c.DynamicProxyEntries = a.Proxy.DynamicProxyEntries
+			c.DynamicProxySelectedID = a.Proxy.DynamicProxySelectedID
 			c.HarvestDialProxyMode = a.Proxy.Mode
 			c.HarvestDialProxyID = a.Proxy.ProxyID
 			c.HarvestDialProxyURL = a.Proxy.URL
 			var err error
 			testConfig, err = ParseConfig([]byte(jsonText(c)))
-			if err != nil || testConfig.DynamicProxyURL == "" {
+			_, _, routeOK := activeDynamicProxy(testConfig, time.Now())
+			if err != nil || !routeOK {
 				return reject("动态或前置代理配置无效")
 			}
 			e.testedProxy = nil
@@ -238,11 +245,12 @@ func (e *Engine) runManual(ctx context.Context, cancel context.CancelFunc, a man
 		route = ""
 	}
 	if a.Route == "dynamic" {
-		if c.DynamicProxyURL == "" {
+		active, _, ok := e.dynamicProxyFor(c, time.Now())
+		if !ok {
 			fail("请先保存动态代理配置")
 			return
 		}
-		route, err = rotateProxy(c.DynamicProxyURL)
+		route, err = rotateProxy(active.URL)
 		if err == nil {
 			outer, err = e.resolveFrontProxy(ctx, c)
 		}

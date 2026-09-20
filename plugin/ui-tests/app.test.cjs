@@ -40,7 +40,7 @@ test('validates bounds, renewal horizon, duplicate accounts and model allowlist'
 });
 
 test('status tolerates pre-initialization, de-duplicates safe IDs, never labels unknown state as raw text', () => {
-  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, resources_ready: false, actions_ready: false, manual_test: null, accounts: [], proxies: [], account_ids: [], tickets: [], events: [], message: '' });
+  assert.deepEqual(ui.parseStatus({ healthy: true }), { host_ready: false, resources_ready: false, actions_ready: false, manual_test: null, accounts: [], proxies: [], account_ids: [], tickets: [], events: [], dynamic_proxy_mode:'auto', dynamic_proxy_entry_count:0, dynamic_proxy_active_id:'', dynamic_proxy_active_name:'', dynamic_proxy_active_country:'', dynamic_proxy_advanced_at:'', dynamic_proxy_advance_reason:'', message: '' });
   const status = ui.parseStatus({ status_json: JSON.stringify({ host_ready: true, account_ids: [8, 2, 8, null, -1, '9', '9007199254740992'], tickets: [] }) });
   assert.deepEqual(status.account_ids, [2, 8, 9]);
   assert.deepEqual(ui.stateLabel('raw-sensitive-ticket-content'), ['未知状态', 'warning']);
@@ -57,6 +57,33 @@ test('redacts credentials and common ticket fields from error display', () => {
   assert.equal(redacted.includes('Bearer-token'), false);
   assert.equal(ui.remainingText(127), '2 分 7 秒');
   assert.equal(ui.remainingText(-1), '—');
+});
+
+test('GeoNode country selector exposes 191 flags and replaces only country marker', () => {
+  assert.equal(ui.GEONODE_COUNTRY_CODES.length, 191);
+  assert.equal(new Set(ui.GEONODE_COUNTRY_CODES).size, 191);
+  assert.match(ui.countryFlag('DE'), /\p{Regional_Indicator}/u);
+  const original = 'socks5://demo-country-de:private@example.test:11000';
+  const changed = ui.replaceProxyCountry(original, 'sg');
+  assert.equal(changed, 'socks5://demo-country-sg:private@example.test:11000');
+  assert.equal(ui.proxyCountryCode(changed), 'sg');
+  assert.equal(ui.safeProxyEndpoint(changed), 'socks5://example.test:11000');
+  assert.throws(() => ui.replaceProxyCountry('socks5://demo:private@example.test:11000', 'fr'), /country-xx/);
+});
+
+test('dynamic proxy pool validates legacy, manual and automatic configurations', () => {
+  const legacy = ui.normalizeConfig({ dynamic_proxy_url: 'socks5://demo-country-de:private@example.test:11000' });
+  assert.equal(legacy.dynamic_proxy_entries[0].id, 'legacy');
+  assert.equal(legacy.dynamic_proxy_entries[0].country_code, 'de');
+  const config = configured({ dynamic_proxy_mode:'manual', dynamic_proxy_selected_id:'sg',
+    dynamic_proxy_entries:[
+      {id:'de',name:'Germany',country_code:'de',url:'socks5://demo-country-de:private@example.test:11000'},
+      {id:'sg',name:'Singapore',country_code:'sg',url:'socks5://demo-country-sg:private@example.test:11000'}
+    ] });
+  assert.equal(ui.validateConfig(config), config);
+  assert.throws(() => ui.validateConfig({...config,dynamic_proxy_selected_id:'missing'}), /不在列表/);
+  const duplicate = {...config,dynamic_proxy_entries:[config.dynamic_proxy_entries[0],{...config.dynamic_proxy_entries[0],id:'other'}]};
+  assert.throws(() => ui.validateConfig(duplicate), /重复地址/);
 });
 
 class Node {
@@ -126,6 +153,29 @@ test('explicit save button works without native form submission in sandbox', asy
   assert.equal(h.calls.save[0].accounts[1].enabled, false);
   assert.equal(h.get('save-state').textContent, '已保存');
   assert.match(h.get('notice').textContent, /STATE Kit 已关闭/);
+  h.runtime.stop();
+});
+
+test('country input builds an ordered pool, supports manual selection and hides credentials', async () => {
+  const h = uiHarness(); await settle();
+  assert.equal(h.get('dynamic-proxy-country').children.length, 192);
+  h.get('dynamic-proxy-url').value = 'socks5://demo-country-de:private@example.test:11000';
+  await h.get('add-dynamic-proxy').click();
+  h.get('dynamic-proxy-country').value = 'sg'; await h.get('dynamic-proxy-country').fire('change');
+  await h.get('add-dynamic-proxy').click();
+  assert.equal(h.get('dynamic-proxy-list').children.length, 2);
+  function text(node) { return String(node.textContent) + node.children.map(text).join(''); }
+  assert.equal(text(h.get('dynamic-proxy-list')).includes('private'), false);
+  const second = h.get('dynamic-proxy-list').children[1];
+  await second.children[1].children[2].click();
+  assert.equal(h.get('dynamic-proxy-mode').value, 'manual');
+  await h.get('save-config').click();
+  const saved = h.calls.save.at(-1);
+  assert.equal(saved.dynamic_proxy_entries.length, 2);
+  assert.equal(saved.dynamic_proxy_entries[0].country_code, 'de');
+  assert.equal(saved.dynamic_proxy_entries[1].country_code, 'sg');
+  assert.equal(saved.dynamic_proxy_selected_id, saved.dynamic_proxy_entries[1].id);
+  assert.equal('dynamic_proxy_rotation_anchor' in saved, false);
   h.runtime.stop();
 });
 
@@ -269,7 +319,7 @@ test('proxy connectivity sends only current draft proxy fields without saving or
  h.get('dynamic-proxy-url').value='socks5h://draft:secret@proxy.test:1080';h.get('harvest-dial-proxy-mode').value='direct';
  await h.get('proxy-test').click();await settle();
  assert.equal(h.calls.save.length,0);assert.equal(h.calls.actions.length,1);
- assert.deepEqual(h.calls.actions[0],{kind:'proxy_test',proxy:{dynamic_proxy_url:'socks5h://draft:secret@proxy.test:1080',harvest_dial_proxy_mode:'direct',harvest_dial_proxy_url:'',harvest_dial_proxy_id:0}});
+ assert.deepEqual(h.calls.actions[0],{kind:'proxy_test',proxy:{dynamic_proxy_url:'socks5h://draft:secret@proxy.test:1080',dynamic_proxy_mode:'auto',dynamic_proxy_entries:[],dynamic_proxy_selected_id:'',harvest_dial_proxy_mode:'direct',harvest_dial_proxy_url:'',harvest_dial_proxy_id:0}});
  h.runtime.stop();
 });
 test('account progress is inline, preserves form edits and disables duplicate harvest',async()=>{

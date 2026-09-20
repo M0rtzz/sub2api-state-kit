@@ -100,6 +100,9 @@ func (e *Engine) schedule() {
 			}
 			force := e.forceRefresh[k]
 			delete(e.forceRefresh, k)
+			if !force {
+				e.maybeAdvanceDynamicProxyForRenewalLocked(e.config, t, a, model, now)
+			}
 			e.startCollectLocked(a, model, force, "automatic")
 		}
 	}
@@ -170,6 +173,7 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 	defer e.wg.Done()
 	success := false
 	reason := "attempts_exhausted"
+	lastProxyID := ""
 	defer func() {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -199,6 +203,9 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 		} else if ctx.Err() == nil {
 			r.LastError = reason
 			r.CooldownUntil = time.Now().Add(time.Duration(c.CooldownSeconds) * time.Second)
+			if r.Attempts >= c.MaxAttempts {
+				e.maybeAdvanceDynamicProxyLocked(c, lastProxyID, time.Now())
+			}
 		}
 	}()
 	select {
@@ -260,7 +267,13 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 			reason = "identity_unavailable"
 			return
 		}
-		rotating, err := rotateProxy(c.DynamicProxyURL)
+		activeProxy, _, ok := e.dynamicProxyFor(c, time.Now())
+		if !ok {
+			reason = "invalid_dynamic_proxy"
+			return
+		}
+		lastProxyID = activeProxy.ID
+		rotating, err := rotateProxy(activeProxy.URL)
 		if err != nil {
 			reason = "invalid_dynamic_proxy"
 			return

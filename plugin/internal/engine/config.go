@@ -11,30 +11,40 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const PluginID = "io.github.wangyunjeff.sub2api-state-kit"
-const Version = "0.3.4"
+const Version = "0.3.5"
 const StateHeader = "x-codex-turn-state"
 const namespace = "state-kit-v1"
 
 // Config contains no OAuth credentials. The host owns credential refresh.
 type Config struct {
-	BusinessUseFront       bool            `json:"business_use_front"`
-	AutoHarvest            bool            `json:"auto_harvest"`
-	AllowWithoutTicket     bool            `json:"allow_without_ticket"`
-	HarvestDialProxyMode   string          `json:"harvest_dial_proxy_mode"`
-	HarvestDialProxyID     int64           `json:"harvest_dial_proxy_id"`
-	HarvestDialProxyURL    string          `json:"harvest_dial_proxy_url"`
-	ObserveExitIP          bool            `json:"observe_exit_ip"`
-	Enabled                bool            `json:"enabled"`
-	DynamicProxyURL        string          `json:"dynamic_proxy_url"`
-	TTLMinutes             int             `json:"ttl_minutes"`
-	RefreshBeforeMinutes   int             `json:"refresh_before_minutes"`
-	MaxAttempts            int             `json:"max_attempts"`
-	AttemptIntervalSeconds int             `json:"attempt_interval_seconds"`
-	CooldownSeconds        int             `json:"cooldown_seconds"`
-	Accounts               []AccountConfig `json:"accounts"`
+	BusinessUseFront       bool                `json:"business_use_front"`
+	AutoHarvest            bool                `json:"auto_harvest"`
+	AllowWithoutTicket     bool                `json:"allow_without_ticket"`
+	HarvestDialProxyMode   string              `json:"harvest_dial_proxy_mode"`
+	HarvestDialProxyID     int64               `json:"harvest_dial_proxy_id"`
+	HarvestDialProxyURL    string              `json:"harvest_dial_proxy_url"`
+	ObserveExitIP          bool                `json:"observe_exit_ip"`
+	Enabled                bool                `json:"enabled"`
+	DynamicProxyURL        string              `json:"dynamic_proxy_url"`
+	DynamicProxyMode       string              `json:"dynamic_proxy_mode"`
+	DynamicProxyEntries    []DynamicProxyEntry `json:"dynamic_proxy_entries"`
+	DynamicProxySelectedID string              `json:"dynamic_proxy_selected_id"`
+	TTLMinutes             int                 `json:"ttl_minutes"`
+	RefreshBeforeMinutes   int                 `json:"refresh_before_minutes"`
+	MaxAttempts            int                 `json:"max_attempts"`
+	AttemptIntervalSeconds int                 `json:"attempt_interval_seconds"`
+	CooldownSeconds        int                 `json:"cooldown_seconds"`
+	Accounts               []AccountConfig     `json:"accounts"`
+}
+type DynamicProxyEntry struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	CountryCode string `json:"country_code"`
+	URL         string `json:"url"`
 }
 type AccountConfig struct {
 	AccountID int64    `json:"account_id"`
@@ -44,10 +54,12 @@ type AccountConfig struct {
 }
 
 func DefaultConfig() Config {
-	return Config{AutoHarvest: true, AllowWithoutTicket: true, TTLMinutes: 60, RefreshBeforeMinutes: 10, MaxAttempts: 8, AttemptIntervalSeconds: 10, CooldownSeconds: 300, Accounts: []AccountConfig{}}
+	return Config{AutoHarvest: true, AllowWithoutTicket: true, DynamicProxyMode: "auto", DynamicProxyEntries: []DynamicProxyEntry{}, TTLMinutes: 60, RefreshBeforeMinutes: 10, MaxAttempts: 8, AttemptIntervalSeconds: 10, CooldownSeconds: 300, Accounts: []AccountConfig{}}
 }
 
 var modelPattern = regexp.MustCompile(`^gpt-[A-Za-z0-9][A-Za-z0-9._-]{0,94}$`)
+var proxyEntryIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+var countryCodePattern = regexp.MustCompile(`^[a-z]{2}$`)
 
 // ParseConfig rejects unknown fields, trailing JSON, and invalid ranges without
 // echoing user input (which can include authenticated proxy URLs).
@@ -68,6 +80,8 @@ func ParseConfig(raw []byte) (Config, error) {
 		return c, errors.New("configuration has trailing JSON")
 	}
 	c.DynamicProxyURL = strings.TrimSpace(c.DynamicProxyURL)
+	c.DynamicProxyMode = strings.TrimSpace(c.DynamicProxyMode)
+	c.DynamicProxySelectedID = strings.TrimSpace(c.DynamicProxySelectedID)
 	c.HarvestDialProxyURL = strings.TrimSpace(c.HarvestDialProxyURL)
 	c.HarvestDialProxyMode = frontProxyMode(c)
 	switch c.HarvestDialProxyMode {
@@ -111,6 +125,61 @@ func ParseConfig(raw []byte) (Config, error) {
 	if err := validateProxy(c.DynamicProxyURL); err != nil {
 		return c, err
 	}
+	if c.DynamicProxyMode == "" {
+		c.DynamicProxyMode = "auto"
+	}
+	if c.DynamicProxyMode != "auto" && c.DynamicProxyMode != "manual" {
+		return c, errors.New("dynamic_proxy_mode must be auto or manual")
+	}
+	if len(c.DynamicProxyEntries) > 64 {
+		return c, errors.New("at most 64 dynamic proxy entries are supported")
+	}
+	entryIDs := map[string]bool{}
+	entryURLs := map[string]bool{}
+	for i := range c.DynamicProxyEntries {
+		entry := &c.DynamicProxyEntries[i]
+		entry.ID = strings.TrimSpace(entry.ID)
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.CountryCode = strings.ToLower(strings.TrimSpace(entry.CountryCode))
+		entry.URL = strings.TrimSpace(entry.URL)
+		if entry.ID == "" {
+			entry.ID = "proxy-" + digest(entry.URL)[:16]
+		}
+		if !proxyEntryIDPattern.MatchString(entry.ID) || entryIDs[entry.ID] {
+			return c, errors.New("dynamic proxy entry IDs must be unique safe identifiers")
+		}
+		entryIDs[entry.ID] = true
+		if len(entry.Name) > 128 || strings.ContainsAny(entry.Name, "\r\n\t") {
+			return c, errors.New("dynamic proxy entry name is invalid")
+		}
+		if entry.CountryCode != "" && !countryCodePattern.MatchString(entry.CountryCode) {
+			return c, errors.New("dynamic proxy country_code must be a two-letter code")
+		}
+		if err := validateProxy(entry.URL); err != nil || entry.URL == "" {
+			return c, errors.New("dynamic proxy entry URL is invalid")
+		}
+		if entryURLs[entry.URL] {
+			return c, errors.New("dynamic proxy entry URLs must be unique")
+		}
+		entryURLs[entry.URL] = true
+		if entry.CountryCode == "" {
+			entry.CountryCode = proxyCountryCode(entry.URL)
+		}
+		if entry.Name == "" {
+			entry.Name = proxyEntryName(entry.CountryCode, i+1)
+		}
+	}
+	if len(c.DynamicProxyEntries) == 0 && c.DynamicProxyURL != "" {
+		country := proxyCountryCode(c.DynamicProxyURL)
+		c.DynamicProxyEntries = []DynamicProxyEntry{{ID: "legacy", Name: proxyEntryName(country, 1), CountryCode: country, URL: c.DynamicProxyURL}}
+		entryIDs["legacy"] = true
+	}
+	if c.DynamicProxySelectedID != "" && !entryIDs[c.DynamicProxySelectedID] {
+		return c, errors.New("dynamic_proxy_selected_id is not in the proxy list")
+	}
+	if c.DynamicProxyMode == "manual" && c.DynamicProxySelectedID == "" && c.DynamicProxyURL == "" && len(c.DynamicProxyEntries) > 0 {
+		c.DynamicProxySelectedID = c.DynamicProxyEntries[0].ID
+	}
 	if len(c.Accounts) > 256 {
 		return c, errors.New("at most 256 accounts are supported")
 	}
@@ -151,8 +220,10 @@ func ParseConfig(raw []byte) (Config, error) {
 	if total > 1024 {
 		return c, errors.New("at most 1024 account/model pairs are supported")
 	}
-	if c.Enabled && anyEnabled && c.DynamicProxyURL == "" {
-		return c, errors.New("dynamic_proxy_url is required for enabled accounts")
+	if c.Enabled && anyEnabled {
+		if _, _, ok := activeDynamicProxy(c, time.Now()); !ok {
+			return c, errors.New("a dynamic proxy URL or pool entry is required for enabled accounts")
+		}
 	}
 	return c, nil
 }
@@ -194,7 +265,7 @@ func digest(parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 func configFingerprint(c Config, a AccountConfig, model string) string {
-	dynamicRoute := c.DynamicProxyURL
+	dynamicRoute := dynamicProxyConfigFingerprint(c)
 	if c.BusinessUseFront {
 		dynamicRoute = digest("business-front-v1", dynamicRoute)
 	}

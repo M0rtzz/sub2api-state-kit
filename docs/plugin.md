@@ -2,9 +2,9 @@
 
 插件版使用官方 **Sub2API v0.2.7** 的 `.s2plugin` 接口。基础功能无需修改宿主；**账号名称、IP 管理代理选择、手动查找及代理 / 模型测试**需要额外安装[v0.3.3 宿主适配](plugin-host-directory.md)。它与本仓库基于 v0.2.6 的增量版、完整部署版是三个可选入口，**选择一种即可**。
 
-- 下载：[插件版 v0.3.3](https://github.com/wangyunjeff/sub2api-state-kit/releases/tag/v0.3.3)
-- 安装文件：`sub2api-state-kit_plugin_v0.3.3.s2plugin`
-- 完整插件源码：`sub2api-state-kit_plugin_v0.3.3_source.zip`，或本仓库的 [`plugin/`](../plugin/)
+- 下载：[HUSTNLP 插件版 v0.3.5](https://github.com/M0rtzz/sub2api-state-kit/releases/tag/v0.3.5-hustnlp)
+- 安装文件：`sub2api-state-kit_plugin_v0.3.5.s2plugin`
+- 完整插件源码：`sub2api-state-kit_plugin_v0.3.5_source.zip`，或本仓库的 [`plugin/`](../plugin/)
 - 包含 Linux amd64、Linux arm64、macOS arm64 三个运行时；宿主自动选择对应架构。
 - 官方接口基线：[v0.2.7 / aea725f](https://github.com/Wei-Shaw/sub2api/tree/aea725f2ea644d5592d0bbb1d63b607efa7e200a)。清单兼容范围为 `>=0.2.7 <0.3.0`，实际验证基线为 0.2.7，其他版本仍需测试。
 
@@ -29,7 +29,7 @@
 
 | 功能 | 插件版行为 |
 | --- | --- |
-| 全局动态池 | 填一次，用于启用账号的后台采集；支持 HTTP(S)、SOCKS5(h) 和会话占位符 |
+| 全局动态池 | 最多 64 项；支持自动顺序轮换、手动固定、HTTP(S)、SOCKS5(h) 和会话占位符 |
 | 前置代理 | 直连、手动 URL、选择 IP 管理中的代理三种方式；第三种需宿主资源目录适配 |
 | 出口与运行日志 | 可选检测公网出口；展示采集、复验、续期和守护的最近 200 条记录 |
 | 账号开关 | 默认全部关闭；只为明确开启的账号和模型采集、注入和守护 |
@@ -76,6 +76,11 @@
    ```
 
    用户名和密码中的特殊字符须分别进行 URL 百分号编码。`{sid}` / `{random}` 用于轮换会话；服务商是否更换实际出口，以其行为为准。不要填“获取代理列表”的 HTTP API 地址。
+
+   - 可把多个完整 URL 按顺序加入轮换列表；每项保留自己的协议、认证和网关。自动模式不按墙钟时间轮换：首个达到续期点、需要重新获取 STATE 的票据成为领跑者并推进一项；同批其他票据不会重复推进，只有该领跑者成功更新后的新票据下次达到续期点时才继续推进，末项后回到第一项。手动模式固定使用所选项。
+   - GeoNode 地址可通过旗帜和中文国家名选择。页面只替换用户名中的 `country-xx`，不会改动密码、网关或端口；如果地址没有这个标记则拒绝替换。
+   - 某项达到「每轮最多尝试」后，如果当前启用的账号/模型中不可用比例达到 20%（5 个目标时即至少 1 个不可用），插件提前推进到下一项，并只重试不可用目标。仍有效的票据继续使用。
+   - 列表、当前国家和最近切换原因可在页面查看；完整 URL、用户名和密码不会进入状态或运行日志。
 
 4. 添加对应账号 ID，选择 Pro / Team，填写要保护的目标模型，打开账号开关。
 5. 按需勾选「检测出口 IP 并写入运行日志」。它会在每次采集、业务出口复验和恢复复验时，通过该次代理会话请求 `https://api.ipify.org?format=json`，只发送 IP 查询，不发送账号授权、STATE 或模型内容。每次查询最多 10 秒，失败后继续模型探测。
@@ -133,7 +138,7 @@ node --test ui-tests/*.test.cjs
 python3 scripts/package_plugin.py build \
   --private-key /PRIVATE/PATH/publisher.pem --output ./artifacts
 python3 scripts/package_plugin.py verify \
-  --package ./artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin
+  --package ./artifacts/sub2api-state-kit_plugin_v0.3.5.s2plugin
 ```
 
 测试覆盖范围与实际结果见 [插件验证记录](plugin-validation.md)。安装包不含作者的账号、代理凭据、API Key、数据库、STATE 或签名私钥。
