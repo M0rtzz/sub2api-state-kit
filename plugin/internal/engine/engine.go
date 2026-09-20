@@ -356,7 +356,7 @@ func (e *Engine) ticketForRequest(_ context.Context, start *pluginv1.ForwardRequ
 	return nil, errors.New("verified STATE unavailable; acquisition is running in the background")
 }
 func validTicket(t *ticket, c Config, a AccountConfig, model string, now time.Time) bool {
-	return t != nil && t.AccountID == a.AccountID && t.Model == model && t.Plan == a.Plan && t.ConfigFingerprint == configFingerprint(c, a, model) && validState(t.State, targetLength(a.Plan)) && t.Version != "" && t.FixedFingerprint != "" && t.IdentityFingerprint != "" && !t.CapturedAt.IsZero() && !t.CapturedAt.After(now.Add(time.Minute)) && t.ExpiresAt.After(t.CapturedAt) && t.ExpiresAt.Sub(t.CapturedAt) <= time.Duration(c.TTLMinutes)*time.Minute && now.Before(t.ExpiresAt)
+	return t != nil && t.AccountID == a.AccountID && t.Model == model && t.Plan == a.Plan && t.ConfigFingerprint == configFingerprint(c, a, model) && validState(t.State, targetLength(a.Plan)) && t.Version != "" && t.FixedFingerprint != "" && t.IdentityFingerprint != "" && !t.CapturedAt.IsZero() && !t.CapturedAt.After(now.Add(time.Minute)) && t.ExpiresAt.After(t.CapturedAt) && t.ExpiresAt.Sub(t.CapturedAt) <= 60*time.Minute && now.Before(t.ExpiresAt)
 }
 func (e *Engine) invalidate(r *receipt, reason string) {
 	if r == nil || (reason != "model_mismatch" && reason != "state_312") {

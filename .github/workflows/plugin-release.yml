@@ -1,20 +1,75 @@
-name: Verify signed STATE plugin on native Linux
+name: Build, verify, and publish signed STATE plugin
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Draft or published release containing the signed plugin
+        description: Release tag for this HUSTNLP compatibility build
         required: true
-        default: v0.3.3
+        default: v0.3.4-hustnlp
+
+concurrency:
+  group: state-kit-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
-  # GitHub requires write access to retrieve unpublished draft release assets.
-  # This workflow only downloads them; it never creates/edits a release or tag.
-  contents: write
+  contents: read
 
 jobs:
-  plugin:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: test "$RELEASE_TAG" = "v0.3.4-hustnlp"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: plugin/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Backend race tests and UI bridge tests
+        working-directory: plugin
+        run: |
+          go test -race ./... -count=1
+          node --test ui-tests/*.test.cjs
+      - name: Build and sign plugin package
+        env:
+          SIGNING_KEY_B64: ${{ secrets.STATE_KIT_RELEASE_PRIVATE_KEY_B64 }}
+        run: |
+          test -n "$SIGNING_KEY_B64"
+          KEY_PATH="$RUNNER_TEMP/state-kit-release.pem"
+          trap 'rm -f "$KEY_PATH"' EXIT
+          printf '%s' "$SIGNING_KEY_B64" | base64 --decode > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          python3 scripts/package_plugin.py build --private-key "$KEY_PATH" --output artifacts
+      - name: Verify package signature and checksums
+        run: |
+          python3 scripts/package_plugin.py verify --package artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          artifacts = Path('artifacts')
+          expected = {
+              line.split(maxsplit=1)[1].strip(): line.split()[0]
+              for line in (artifacts / 'SHA256SUMS').read_text().splitlines()
+          }
+          for name, digest in expected.items():
+              actual = hashlib.sha256((artifacts / name).read_bytes()).hexdigest()
+              assert actual == digest, f'Checksum mismatch: {name}'
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-plugin-release
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+
+  native-verification:
+    needs: build
     strategy:
       fail-fast: false
       matrix:
@@ -33,26 +88,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Backend race tests and UI bridge tests
-        working-directory: plugin
-        run: |
-          go test -race ./... -count=1
-          node --test ui-tests/*.test.cjs
-      - name: Download and verify exact release package
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: |
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.s2plugin' --pattern SHA256SUMS --dir artifacts
-          python3 scripts/package_plugin.py verify --package artifacts/sub2api-state-kit_plugin_v0.3.3.s2plugin
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-          p = Path('artifacts/sub2api-state-kit_plugin_v0.3.3.s2plugin')
-          expected = next(line.split()[0] for line in Path('artifacts/SHA256SUMS').read_text().splitlines() if line.endswith(p.name))
-          assert hashlib.sha256(p.read_bytes()).hexdigest() == expected
-          PY
-      - name: Check release runtime matches this source
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-plugin-release
+          path: artifacts
+      - name: Verify signed package
+        run: python3 scripts/package_plugin.py verify --package artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin
+      - name: Check packaged runtime matches this source
         env:
           ARCH: ${{ matrix.arch }}
           CGO_ENABLED: '0'
@@ -61,15 +103,17 @@ jobs:
           python3 - <<'PY'
           import hashlib, os, zipfile
           from pathlib import Path
-          with zipfile.ZipFile('artifacts/sub2api-state-kit_plugin_v0.3.3.s2plugin') as z:
-              delivered = z.read('runtimes/linux-' + os.environ['ARCH'] + '/state-kit')
-          assert hashlib.sha256(delivered).digest() == hashlib.sha256(Path('rebuilt-state-kit').read_bytes()).digest(), 'Release binary differs from source build'
+          package = 'artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin'
+          with zipfile.ZipFile(package) as archive:
+              delivered = archive.read('runtimes/linux-' + os.environ['ARCH'] + '/state-kit')
+          rebuilt = Path('rebuilt-state-kit').read_bytes()
+          assert hashlib.sha256(delivered).digest() == hashlib.sha256(rebuilt).digest(), 'Release binary differs from source build'
           PY
       - name: Load with stock Sub2API v0.2.7 installer and process runtime
         run: |
           git clone --depth 1 --branch v0.2.7 https://github.com/Wei-Shaw/sub2api.git stock-host
           test "$(git -C stock-host rev-parse HEAD)" = aea725f2ea644d5592d0bbb1d63b607efa7e200a
-          python3 plugin/integration/run_host_contract.py --host-src stock-host --package artifacts/sub2api-state-kit_plugin_v0.3.3.s2plugin --public-key plugin/release/publisher-public-key.txt --log host-contract.log
+          python3 plugin/integration/run_host_contract.py --host-src stock-host --package artifacts/sub2api-state-kit_plugin_v0.3.4.s2plugin --public-key plugin/release/publisher-public-key.txt --log host-contract.log
       - name: Verify optional host directory adapter
         run: |
           python3 scripts/prepare_plugin_host.py --upstream stock-host --output directory-host
@@ -90,3 +134,26 @@ jobs:
         with:
           name: plugin-native-${{ matrix.arch }}
           path: host-contract.log
+          if-no-files-found: ignore
+
+  publish:
+    needs: native-verification
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-plugin-release
+          path: artifacts
+      - name: Publish compatibility release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release create "$RELEASE_TAG" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "STATE Kit v0.3.4 HUSTNLP compatibility build" \
+            --notes "Adds the explicit one-way model alias gpt-5.6-sol -> gpt-6-sol while preserving strict validation for every other model." \
+            --prerelease

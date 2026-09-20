@@ -65,3 +65,30 @@ func TestCompletionObserverMismatchCannotBeHiddenByLaterMatch(t *testing.T) {
 		t.Fatal("later match hid a mismatch")
 	}
 }
+
+func TestCompletionObserverUsesExplicitOneWayModelAliases(t *testing.T) {
+	tests := []struct {
+		name, expected, actual string
+		matches                bool
+	}{
+		{"exact model", "gpt-5.6-sol", "gpt-5.6-sol", true},
+		{"supported rename", "gpt-5.6-sol", "gpt-6-sol", true},
+		{"reverse rename is rejected", "gpt-6-sol", "gpt-5.6-sol", false},
+		{"snapshot suffix is rejected", "gpt-5.6-sol", "gpt-6-sol-2026-09-20", false},
+		{"nearby model is rejected", "gpt-5.6-sol", "gpt-6-astra", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			o := newCompletionObserver(tc.expected)
+			o.Write([]byte(`data: {"type":"response.completed","response":{"status":"completed","model":"` + tc.actual + `"}}` + "\n\n"))
+			o.Finish()
+			complete, matches := o.Result()
+			if !complete || matches != tc.matches {
+				t.Fatalf("got (%v,%v), want (true,%v)", complete, matches, tc.matches)
+			}
+			if o.actual != tc.actual {
+				t.Fatalf("actual model = %q, want %q", o.actual, tc.actual)
+			}
+		})
+	}
+}

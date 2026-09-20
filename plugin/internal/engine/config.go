@@ -14,7 +14,7 @@ import (
 )
 
 const PluginID = "io.github.wangyunjeff.sub2api-state-kit"
-const Version = "0.3.3"
+const Version = "0.3.4"
 const StateHeader = "x-codex-turn-state"
 const namespace = "state-kit-v1"
 
@@ -203,10 +203,9 @@ func configFingerprint(c Config, a AccountConfig, model string) string {
 	} else if frontProxyMode(c) == "manual" {
 		dynamicRoute = digest("chained-v1", dynamicRoute, c.HarvestDialProxyURL)
 	}
-	return digest("v1", dynamicRoute, a.Plan, model, jsonText(struct {
-		ID  int64
-		TTL int
-	}{a.AccountID, c.TTLMinutes}))
+	// Lifetime and retry policy apply to future acquisition. They must not
+	// invalidate an already verified ticket when advanced settings are saved.
+	return digest("v2", dynamicRoute, a.Plan, model, strconv.FormatInt(a.AccountID, 10))
 }
 func jsonText(v any) string { b, _ := json.Marshal(v); return string(b) }
 func targetLength(plan string) int {

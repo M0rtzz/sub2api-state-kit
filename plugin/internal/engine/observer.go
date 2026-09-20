@@ -127,9 +127,20 @@ func (o *completionObserver) inspect(data []byte) {
 		o.actual = model
 	}
 	o.complete = true
-	o.matches = o.matches && model == o.expected
+	o.matches = o.matches && modelsCompatible(o.expected, model)
 }
 
 func noResponseError(raw json.RawMessage) bool {
 	return len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// modelsCompatible keeps model validation strict while allowing explicit,
+// one-way aliases for upstream model renames. Do not replace this allowlist
+// with prefix, suffix, or version-pattern matching: a nearby model name can
+// represent a different route or entitlement.
+func modelsCompatible(expected, actual string) bool {
+	if expected == actual {
+		return true
+	}
+	return expected == "gpt-5.6-sol" && actual == "gpt-6-sol"
 }

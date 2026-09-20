@@ -146,6 +146,59 @@ func TestConfigStrictIsolation(t *testing.T) {
 		t.Fatal("default slices shared")
 	}
 }
+
+func TestAdvancedConfigSaveKeepsReadyTicket(t *testing.T) {
+	h := testHost(7)
+	e := newEngine(h, "http://127.0.0.1:1", time.Hour)
+	defer e.Close()
+	e.mu.Lock()
+	e.warmup = 0
+	e.mu.Unlock()
+
+	c := testConfig("http://dynamic.example:8080", 7)
+	now := time.Now()
+	a := c.Accounts[0]
+	k := keyFor(a.AccountID, a.Models[0])
+	ready := &ticket{
+		AccountID:           a.AccountID,
+		Model:               a.Models[0],
+		Plan:                a.Plan,
+		State:               testState(292),
+		Version:             "ready-before-advanced-save",
+		ConfigFingerprint:   configFingerprint(c, a, a.Models[0]),
+		FixedFingerprint:    proxyFingerprint("http://business.example:8080"),
+		IdentityFingerprint: stableHeaders(a.AccountID, nil),
+		CapturedAt:          now.Add(-time.Minute),
+		ExpiresAt:           now.Add(30 * time.Minute),
+	}
+	e.mu.Lock()
+	e.config = c
+	e.generation = 1
+	e.tickets[k] = ready
+	e.directory[a.AccountID] = true
+	e.mu.Unlock()
+
+	advanced := c
+	advanced.TTLMinutes = 1
+	advanced.RefreshBeforeMinutes = 0
+	advanced.MaxAttempts = 32
+	advanced.AttemptIntervalSeconds = 300
+	advanced.CooldownSeconds = 3600
+	advanced.ObserveExitIP = !c.ObserveExitIP
+	advanced.AllowWithoutTicket = !c.AllowWithoutTicket
+	apply(t, e, advanced)
+	e.schedule()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.tickets[k] != ready || !validTicket(e.tickets[k], advanced, advanced.Accounts[0], a.Models[0], time.Now()) {
+		t.Fatal("advanced settings invalidated an available ticket")
+	}
+	if len(e.jobs) != 0 {
+		t.Fatal("advanced settings triggered STATE acquisition for an available ticket")
+	}
+}
+
 func TestCollectFixedProxyValidationAndPersistence(t *testing.T) {
 	h := testHost(42)
 	var dynamic, fixed atomic.Int32
