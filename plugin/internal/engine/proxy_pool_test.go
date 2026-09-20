@@ -212,6 +212,47 @@ func TestFailureRateAdvanceConsumesSimultaneousLeaderRenewal(t *testing.T) {
 	}
 }
 
+func TestRenewalAdvanceStillAllowsFailureRateFailoverWithoutDoubleAdvance(t *testing.T) {
+	c := proxyPoolConfig(5)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	e := &Engine{config: c, tickets: map[string]*ticket{}, records: map[string]*jobRecord{}, wake: make(chan struct{}, 1)}
+	account := c.Accounts[0]
+	for i, model := range account.Models {
+		if i == 4 {
+			continue
+		}
+		ticket := readyPoolTicket(c, account, model, now)
+		if i == 0 {
+			ticket.Version = "leader-current"
+			ticket.CapturedAt = now.Add(-50 * time.Minute)
+			ticket.ExpiresAt = now.Add(10 * time.Minute)
+			ticket.RefreshAt = now
+		}
+		e.tickets[keyFor(account.AccountID, model)] = ticket
+	}
+	leader := e.tickets[keyFor(account.AccountID, account.Models[0])]
+	if !e.maybeAdvanceDynamicProxyForRenewalLocked(c, leader, account, account.Models[0], now) {
+		t.Fatal("due renewal leader did not advance from DE to SG")
+	}
+	if !e.maybeAdvanceDynamicProxyLocked(c, "sg", now) {
+		t.Fatal("20 percent failure on the renewal-selected country did not advance to FR")
+	}
+	active, _, _ := activeDynamicProxyAt(c, now, e.dynamicProxyAdvance)
+	if active.ID != "fr" {
+		t.Fatalf("renewal plus a genuine failure-rate failover should select FR, got %s", active.ID)
+	}
+	if e.maybeAdvanceDynamicProxyForRenewalLocked(c, leader, account, account.Models[0], now) {
+		t.Fatal("failure-rate failover did not consume the same leader generation")
+	}
+	if e.maybeAdvanceDynamicProxyLocked(c, "sg", now) {
+		t.Fatal("late failure from the previous country skipped another country")
+	}
+	active, _, _ = activeDynamicProxyAt(c, now, e.dynamicProxyAdvance)
+	if active.ID != "fr" {
+		t.Fatalf("deduplication did not hold the active country at FR, got %s", active.ID)
+	}
+}
+
 func TestDynamicProxyPoolDoesNotAdvanceBelowTwentyPercent(t *testing.T) {
 	c := proxyPoolConfig(6)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
