@@ -95,7 +95,7 @@ func (e *Engine) schedule() {
 				continue
 			}
 			t := e.tickets[k]
-			if !e.forceRefresh[k] && validTicket(t, e.config, a, model, now) && t.ExpiresAt.Sub(now) > time.Duration(e.config.RefreshBeforeMinutes)*time.Minute {
+			if !e.forceRefresh[k] && validTicket(t, e.config, a, model, now) && !ticketRefreshDue(t, e.config, now) {
 				continue
 			}
 			force := e.forceRefresh[k]
@@ -103,6 +103,18 @@ func (e *Engine) schedule() {
 			e.startCollectLocked(a, model, force, "automatic")
 		}
 	}
+}
+
+func ticketRefreshDue(t *ticket, c Config, now time.Time) bool {
+	if t == nil {
+		return true
+	}
+	refreshAt := t.RefreshAt
+	if refreshAt.IsZero() || refreshAt.Before(t.CapturedAt) || refreshAt.After(t.ExpiresAt) {
+		// Compatibility fallback for tickets saved before refresh_at existed.
+		refreshAt = t.ExpiresAt.Add(-time.Duration(c.RefreshBeforeMinutes) * time.Minute)
+	}
+	return !now.Before(refreshAt)
 }
 
 // Caller holds e.mu. Targeted manual starts never wake the all-account scheduler.
@@ -301,7 +313,8 @@ func (e *Engine) collect(ctx context.Context, host pluginv1.HostServiceClient, c
 			}
 			continue
 		}
-		t := &ticket{AccountID: a.AccountID, Model: model, Plan: a.Plan, State: candidate, Version: randomID(), ConfigFingerprint: fp, FixedFingerprint: proxyFingerprint(fixed.ProxyUrl), IdentityFingerprint: stableIdentity(fixed), CapturedAt: captured, ExpiresAt: captured.Add(time.Duration(c.TTLMinutes) * time.Minute)}
+		expires := captured.Add(time.Duration(c.TTLMinutes) * time.Minute)
+		t := &ticket{AccountID: a.AccountID, Model: model, Plan: a.Plan, State: candidate, Version: randomID(), ConfigFingerprint: fp, FixedFingerprint: proxyFingerprint(fixed.ProxyUrl), IdentityFingerprint: stableIdentity(fixed), CapturedAt: captured, ExpiresAt: expires, RefreshAt: expires.Add(-time.Duration(c.RefreshBeforeMinutes) * time.Minute)}
 		if e.commit(ctx, host, c, a, model, k, gen, t, true) {
 			success = true
 			return

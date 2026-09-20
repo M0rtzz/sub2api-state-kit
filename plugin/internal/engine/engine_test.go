@@ -169,7 +169,8 @@ func TestAdvancedConfigSaveKeepsReadyTicket(t *testing.T) {
 		FixedFingerprint:    proxyFingerprint("http://business.example:8080"),
 		IdentityFingerprint: stableHeaders(a.AccountID, nil),
 		CapturedAt:          now.Add(-time.Minute),
-		ExpiresAt:           now.Add(30 * time.Minute),
+		ExpiresAt:           now.Add(20 * time.Minute),
+		RefreshAt:           now.Add(10 * time.Minute),
 	}
 	e.mu.Lock()
 	e.config = c
@@ -179,8 +180,8 @@ func TestAdvancedConfigSaveKeepsReadyTicket(t *testing.T) {
 	e.mu.Unlock()
 
 	advanced := c
-	advanced.TTLMinutes = 1
-	advanced.RefreshBeforeMinutes = 0
+	advanced.TTLMinutes = 45
+	advanced.RefreshBeforeMinutes = 29
 	advanced.MaxAttempts = 32
 	advanced.AttemptIntervalSeconds = 300
 	advanced.CooldownSeconds = 3600

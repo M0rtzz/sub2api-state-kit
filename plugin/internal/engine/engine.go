@@ -80,6 +80,7 @@ type ticket struct {
 	IdentityFingerprint string    `json:"identity_fingerprint"`
 	CapturedAt          time.Time `json:"captured_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
+	RefreshAt           time.Time `json:"refresh_at"`
 }
 type receipt struct {
 	State, Version, Key, ConfigFingerprint string
