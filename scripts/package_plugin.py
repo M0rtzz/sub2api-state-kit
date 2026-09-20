@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLUGIN = ROOT / "plugin"
 VERSION = "0.3.4"
 PLUGIN_ID = "io.github.wangyunjeff.sub2api-state-kit"
-KEY_ID = "state-kit-release-v1"
+KEY_ID = "state-kit-hustnlp-release-v1"
 PLATFORMS = ("linux-amd64", "linux-arm64", "darwin-arm64")
 
 

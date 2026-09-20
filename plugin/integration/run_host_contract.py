@@ -72,7 +72,7 @@ def main() -> int:
             "Running real stock-host installer and plugin process tests; localhost upstreams only.",
             f"Package SHA256: {hashlib.sha256(package.read_bytes()).hexdigest()}",
             f"Platform: {platform.system()} {platform.machine()}",
-            "Host compatibility: Sub2API 0.2.7; publisher key ID: state-kit-release-v1",
+            "Host compatibility: Sub2API 0.2.7; publisher key ID: state-kit-hustnlp-release-v1",
         ]
         if (host / ".git").exists():
             revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=host,

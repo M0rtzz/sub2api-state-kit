@@ -46,7 +46,7 @@
 
 ### 1. 配置信任公钥
 
-官方只内置信任它自己的插件发布者。第三方插件必须在宿主 `config.yaml` 中追加发布者公钥，**只需配置一次**。下载 Release 中的 `trusted-publisher.yaml`，把其中 `plugins.trusted_publishers.state-kit-release-v1` 合并到原配置中；不要用整个示例覆盖自己的数据库、Redis 或其他设置。
+官方只内置信任它自己的插件发布者。第三方插件必须在宿主 `config.yaml` 中追加发布者公钥，**只需配置一次**。下载 Release 中的 `trusted-publisher.yaml`，把其中 `plugins.trusted_publishers.state-kit-hustnlp-release-v1` 合并到原配置中；不要用整个示例覆盖自己的数据库、Redis 或其他设置。
 
 公钥也在仓库的 [`publisher-public-key.txt`](../plugin/release/publisher-public-key.txt) 中。公钥可以公开，它不是 API Key 或代理密码。不要开启 `allow_unsigned`。
 

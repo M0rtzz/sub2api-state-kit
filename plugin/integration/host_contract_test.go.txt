@@ -28,7 +28,7 @@ import (
 )
 
 const stateKitContractPluginID = "io.github.wangyunjeff.sub2api-state-kit"
-const stateKitContractKeyID = "state-kit-release-v1"
+const stateKitContractKeyID = "state-kit-hustnlp-release-v1"
 
 type stateKitContractDirectory struct {
 	lists    atomic.Int64
